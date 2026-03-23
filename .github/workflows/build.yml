@@ -18,7 +18,7 @@ jobs:
       artifact: hidden-service-vanity-linux-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -26,7 +26,7 @@ jobs:
           targets: x86_64-unknown-linux-gnu
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -52,7 +52,7 @@ jobs:
           tar -czvf hidden-service-vanity-linux-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz hidden-service-vanity
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: linux-archive
           path: target/x86_64-unknown-linux-gnu/release/*.tar.gz
@@ -64,7 +64,7 @@ jobs:
       artifact: hidden-service-vanity-windows-x86_64-${{ steps.version.outputs.VERSION }}.zip
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -72,7 +72,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -87,15 +87,17 @@ jobs:
 
       - name: Get version
         id: version
+        shell: bash
         run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
       - name: Create archive
+        shell: bash
         run: |
           cd target/x86_64-pc-windows-msvc/release
           7z a hidden-service-vanity-windows-x86_64-${{ steps.version.outputs.VERSION }}.zip hidden-service-vanity.exe
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows-archive
           path: target/x86_64-pc-windows-msvc/release/*.zip
@@ -109,13 +111,13 @@ jobs:
       contents: write
     steps:
       - name: Download Linux archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: linux-archive
           path: ./artifacts
 
       - name: Download Windows archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: windows-archive
           path: ./artifacts

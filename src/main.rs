@@ -12,7 +12,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-const KERNEL_SOURCE: &str = include_str!("../kernels/combined_vanity.cu");
+// Kernel source embedded at compile time by build.rs
+const KERNEL_SOURCE: &str = include_str!(concat!(env!("OUT_DIR"), "/combined_kernel.cu"));
 
 mod precomp_table;
 use precomp_table::BASE_TABLE;
@@ -464,16 +465,7 @@ fn run(args: RunArgs) -> Result<()> {
     let stream = ctx.default_stream();
 
     println!("Compiling combined CUDA kernel...");
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let kernel_dir = manifest_dir.join("kernels");
-    let primitives_dir = kernel_dir.join("primitives");
-    let opts = CompileOptions {
-        include_paths: vec![
-            kernel_dir.to_string_lossy().into_owned(),
-            primitives_dir.to_string_lossy().into_owned(),
-        ],
-        ..Default::default()
-    };
+    let opts = CompileOptions::default();
     let ptx =
         compile_ptx_with_opts(KERNEL_SOURCE, opts).context("Failed to compile CUDA kernel")?;
     let module = ctx.load_module(ptx).context("Failed to load CUDA module")?;

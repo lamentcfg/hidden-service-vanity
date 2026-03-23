@@ -11,6 +11,7 @@ Generate custom vanity addresses for I2P (`.b32.i2p`) and Tor v3 (`.onion`) hidd
 - **Tor Compatible**: Generates keys compatible with tor hidden services
 - **Case-insensitive Matching**: Search for prefixes regardless of case
 - **Multi-prefix Search**: Search for multiple prefixes simultaneously
+- **Push Notifications**: Optional ntfy.sh notifications when addresses are found
 
 ## Prerequisites
 
@@ -62,6 +63,11 @@ cargo build --release
 | `--blocks` | | auto | Number of blocks (auto-detected from GPU) |
 | `--batch-size` | | `1048576` | Keys per GPU launch |
 | `--count` | `-n` | `1` | Number of addresses to generate per network |
+| `--ntfy-host` | | `https://ntfy.sh` | Ntfy server URL |
+| `--ntfy-topic` | | (none) | Ntfy topic (enables notifications when set) |
+| `--ntfy-username` | | (none) | Ntfy username for authentication |
+| `--ntfy-password` | | (none) | Ntfy password for authentication |
+| `--ntfy-on-match` | | `true` | Notify on each match (true) or only on completion (false) |
 
 ### Examples
 
@@ -86,19 +92,12 @@ cargo build --release
 
 # Mix command-line and file-based prefixes
 ./target/release/hidden-service-vanity -i foo --i2p-list prefixes.txt -t bar --tor-list tor_prefixes.txt -o ./keys
-```
 
-### Prefix List File Format
+# Enable ntfy notifications when a match is found
+./target/release/hidden-service-vanity -i test --ntfy-topic my-vanity-search -o ./keys
 
-The `--i2p-list` and `--tor-list` options accept a text file with one prefix per line:
-
-```
-# This is a comment
-abc
-def
-
-# Whitespace is trimmed
-   xyz
+# Use custom ntfy server with authentication
+./target/release/hidden-service-vanity -i test --ntfy-host https://ntfy.example.com --ntfy-topic my-topic --ntfy-username user --ntfy-password pass -o ./keys
 ```
 
 ## Performance Estimates

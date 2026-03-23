@@ -14,6 +14,8 @@ env:
 jobs:
   build-linux:
     runs-on: ubuntu-22.04
+    outputs:
+      artifact: hidden-service-vanity-linux-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,15 +42,26 @@ jobs:
       - name: Strip binary
         run: strip target/x86_64-unknown-linux-gnu/release/hidden-service-vanity
 
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create archive
+        run: |
+          cd target/x86_64-unknown-linux-gnu/release
+          tar -czvf hidden-service-vanity-linux-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz hidden-service-vanity
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hidden-service-vanity-linux-x86_64
-          path: target/x86_64-unknown-linux-gnu/release/hidden-service-vanity
+          name: linux-archive
+          path: target/x86_64-unknown-linux-gnu/release/*.tar.gz
           if-no-files-found: error
 
   build-windows:
     runs-on: windows-2022
+    outputs:
+      artifact: hidden-service-vanity-windows-x86_64-${{ steps.version.outputs.VERSION }}.zip
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,11 +85,20 @@ jobs:
       - name: Build (release)
         run: cargo build --release --target x86_64-pc-windows-msvc
 
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create archive
+        run: |
+          cd target/x86_64-pc-windows-msvc/release
+          7z a hidden-service-vanity-windows-x86_64-${{ steps.version.outputs.VERSION }}.zip hidden-service-vanity.exe
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hidden-service-vanity-windows-x86_64
-          path: target/x86_64-pc-windows-msvc/release/hidden-service-vanity.exe
+          name: windows-archive
+          path: target/x86_64-pc-windows-msvc/release/*.zip
           if-no-files-found: error
 
   release:
@@ -86,31 +108,17 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download Linux artifact
+      - name: Download Linux archive
         uses: actions/download-artifact@v4
         with:
-          name: hidden-service-vanity-linux-x86_64
+          name: linux-archive
           path: ./artifacts
 
-      - name: Download Windows artifact
+      - name: Download Windows archive
         uses: actions/download-artifact@v4
         with:
-          name: hidden-service-vanity-windows-x86_64
+          name: windows-archive
           path: ./artifacts
-
-      - name: Get version
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-
-      - name: Create release archive (Linux)
-        run: |
-          cd artifacts
-          tar -czvf hidden-service-vanity-linux-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz hidden-service-vanity
-
-      - name: Create release archive (Windows)
-        run: |
-          cd artifacts
-          7z a hidden-service-vanity-windows-x86_64-${{ steps.version.outputs.VERSION }}.zip hidden-service-vanity.exe
 
       - name: Generate checksums
         run: |
@@ -121,7 +129,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/hidden-service-vanity-linux-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz
-            artifacts/hidden-service-vanity-windows-x86_64-${{ steps.version.outputs.VERSION }}.zip
-            artifacts/checksums.txt
+            artifacts/*
           generate_release_notes: true

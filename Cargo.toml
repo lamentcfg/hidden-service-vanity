@@ -1,0 +1,42 @@
+[package]
+name = "i2p-vanity-cuda"
+version = "0.1.0"
+edition = "2021"
+description = "I2P vanity address generator with CUDA acceleration"
+license = "MIT"
+keywords = ["i2p", "vanity", "gpu", "cuda"]
+readme = "README.md"
+
+[[bin]]
+name = "hidden-service-vanity"
+path = "src/main.rs"
+
+[dependencies]
+# CUDA bindings - target CUDA 11.4 for maximum compatibility
+# Uses dynamic-loading so no CUDA libraries needed at build time
+cudarc = { version = "0.19", features = ["driver", "nvrtc", "cuda-11040"] }
+
+# Cryptography
+sha2 = "0.10"
+sha3 = "0.10"
+base32 = "0.5"
+ed25519 = { version = "2.2", features = ["pkcs8"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Utilities
+rand = "0.8"
+chrono = "0.4"
+anyhow = "1.0"
+
+# HTTP client for ntfy notifications
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

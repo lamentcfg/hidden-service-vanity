@@ -98,22 +98,30 @@ jobs:
           name: hidden-service-vanity-windows-x86_64
           path: ./artifacts
 
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
       - name: Create release archive (Linux)
         run: |
           cd artifacts
-          mv hidden-service-vanity hidden-service-vanity-linux-x86_64
-          tar -czvf hidden-service-vanity-linux-x86_64.tar.gz hidden-service-vanity-linux-x86_64
+          tar -czvf hidden-service-vanity-linux-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz hidden-service-vanity
 
       - name: Create release archive (Windows)
         run: |
           cd artifacts
-          mv hidden-service-vanity.exe hidden-service-vanity-windows-x86_64.exe
-          7z a hidden-service-vanity-windows-x86_64.zip hidden-service-vanity-windows-x86_64.exe
+          7z a hidden-service-vanity-windows-x86_64-${{ steps.version.outputs.VERSION }}.zip hidden-service-vanity.exe
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum *.tar.gz *.zip > checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/hidden-service-vanity-linux-x86_64.tar.gz
-            artifacts/hidden-service-vanity-windows-x86_64.zip
+            artifacts/hidden-service-vanity-linux-x86_64-${{ steps.version.outputs.VERSION }}.tar.gz
+            artifacts/hidden-service-vanity-windows-x86_64-${{ steps.version.outputs.VERSION }}.zip
+            artifacts/checksums.txt
           generate_release_notes: true

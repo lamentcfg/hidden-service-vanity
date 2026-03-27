@@ -211,8 +211,8 @@ constexpr int TOR_PUBKEY_SIZE = 32;
  *
  * Tor checksum = SHA3-256(".onion checksum" || pubkey || version)[:2]
  *
- * Note: The final address format is: base32(pubkey || version || checksum)
- * The version byte (0x03) comes AFTER the pubkey in the address data.
+ * Note: The final address format is: base32(pubkey || checksum || version)
+ * The checksum (2 bytes) comes after the pubkey, then the version byte (0x03).
  *
  * @param pubkey 32-byte Ed25519 public key
  * @param checksum Output 2-byte checksum

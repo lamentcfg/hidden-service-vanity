@@ -21,22 +21,56 @@ constexpr int I2P_DESTINATION_SIZE = I2P_PUBKEY_SIZE + I2P_SIGNING_PUBKEY_SLOT +
 // Tor v3 sizes
 constexpr int TOR_ADDRESS_DATA_SIZE = 35;
 
-// I2P Destination: 256 random + 32 pubkey + 96 padding + 7 certificate = 391 bytes
+// I2P Destination: 256 random + 96 padding + 32 pubkey + 7 certificate = 391 bytes
+// Per I2P spec: "Crypto Public Key is aligned at the start and Signing Public Key is aligned at the end"
+
+// Isolate SHA-256 into its own function to prevent register allocation interference
+// from the heavy Ed25519 computation in the calling kernel.
+//
+// Without __noinline__, the CUDA compiler inlines the SHA-256 streaming API into the
+// calling kernel. After the Ed25519 scalar multiplication (which uses many registers
+// and large stack frames), the compiler's register allocator/spill code corrupts the
+// SHA-256 state, producing a consistently wrong hash. Forcing a separate stack frame
+// via __noinline__ isolates the SHA-256 computation and produces correct results.
+__device__ __noinline__ void compute_i2p_hash(
+    const uint8_t* random_data,
+    const uint8_t* pubkey,
+    uint8_t* hash)
+{
+    sha256_ctx sha_ctx;
+    sha256_init(&sha_ctx);
+    sha256_update(&sha_ctx, random_data, I2P_PUBKEY_SIZE);
+
+    uint8_t pad_zero = 0;
+    for (int i = 0; i < I2P_SIGNING_PUBKEY_SLOT - ED25519_PUBLIC_KEY_SIZE; i++) {
+        sha256_update(&sha_ctx, &pad_zero, 1);
+    }
+    sha256_update(&sha_ctx, pubkey, ED25519_PUBLIC_KEY_SIZE);
+
+    uint8_t cert[I2P_CERTIFICATE_SIZE] = {0x05, 0x00, 0x04, 0x00, 0x07, 0x00, 0x00};
+    sha256_update(&sha_ctx, cert, I2P_CERTIFICATE_SIZE);
+
+    sha256_final(&sha_ctx, hash);
+}
+
 __device__ void construct_i2p_destination(
     const uint8_t* random_data,
     const uint8_t* ed25519_pubkey,
     uint8_t* destination
 ) {
+    // Crypto Public Key (ElGamal) at the START
     for (int i = 0; i < I2P_PUBKEY_SIZE; i++) {
         destination[i] = random_data[i];
     }
-    for (int i = 0; i < ED25519_PUBLIC_KEY_SIZE; i++) {
-        destination[I2P_PUBKEY_SIZE + i] = ed25519_pubkey[i];
-    }
+    // Padding in the MIDDLE (96 bytes for Ed25519)
     for (int i = 0; i < I2P_SIGNING_PUBKEY_SLOT - ED25519_PUBLIC_KEY_SIZE; i++) {
-        destination[I2P_PUBKEY_SIZE + ED25519_PUBLIC_KEY_SIZE + i] = 0;
+        destination[I2P_PUBKEY_SIZE + i] = 0;
     }
-    // Key Certificate for Ed25519
+    // Signing Public Key (Ed25519) at the END, right before certificate
+    for (int i = 0; i < ED25519_PUBLIC_KEY_SIZE; i++) {
+        destination[I2P_PUBKEY_SIZE + I2P_SIGNING_PUBKEY_SLOT - ED25519_PUBLIC_KEY_SIZE + i] = ed25519_pubkey[i];
+    }
+    // Key Certificate for Ed25519 (type 7) with ElGamal (type 0)
     destination[I2P_PUBKEY_SIZE + I2P_SIGNING_PUBKEY_SLOT] = 0x05;
     destination[I2P_PUBKEY_SIZE + I2P_SIGNING_PUBKEY_SLOT + 1] = 0x00;
     destination[I2P_PUBKEY_SIZE + I2P_SIGNING_PUBKEY_SLOT + 2] = 0x04;
@@ -54,9 +88,9 @@ __device__ void construct_tor_address_data(
     for (int i = 0; i < ED25519_PUBLIC_KEY_SIZE; i++) {
         output[i] = pubkey[i];
     }
-    output[32] = TOR_VERSION;
-    output[33] = checksum[0];
-    output[34] = checksum[1];
+    output[32] = checksum[0];
+    output[33] = checksum[1];
+    output[34] = TOR_VERSION;
 }
 
 __device__ bool matches_prefix(const char* address, const char* prefix, int prefix_len) {
@@ -182,11 +216,9 @@ extern "C" __global__ void search_combined_kernel(
             }
         }
 
-        uint8_t destination[I2P_DESTINATION_SIZE];
-        construct_i2p_destination(random_data, pubkey, destination);
-
+        // Hash destination piece-by-piece (isolated in __noinline__ function)
         uint8_t hash[32];
-        sha256(destination, I2P_DESTINATION_SIZE, hash);
+        compute_i2p_hash(random_data, pubkey, hash);
 
         char i2p_address[BASE32_I2P_ADDRESS_LENGTH + 1];
         base32_encode(hash, i2p_address);
@@ -285,11 +317,8 @@ extern "C" __global__ void debug_combined_kernel(
         }
     }
 
-    uint8_t destination[I2P_DESTINATION_SIZE];
-    construct_i2p_destination(random_data, pubkey, destination);
-
     uint8_t hash[32];
-    sha256(destination, I2P_DESTINATION_SIZE, hash);
+    compute_i2p_hash(random_data, pubkey, hash);
 
     char i2p_address[BASE32_I2P_ADDRESS_LENGTH + 1];
     base32_encode(hash, i2p_address);
@@ -314,5 +343,153 @@ extern "C" __global__ void debug_combined_kernel(
 
     if (tid == 0) {
         *debug_count = max_debug;
+    }
+}
+
+// --- Test kernels ---
+
+extern "C" __global__ void test_ed25519_pubkey_kernel(
+    const uint8_t* __restrict__ seed,
+    const ge_precomp* __restrict__ base_table,
+    uint8_t* __restrict__ pubkey_out)
+{
+    uint8_t scalar[32];
+    ed25519_derive_scalar(seed, scalar);
+
+    ge_p3 pubkey_point;
+    ge_scalarmult_base_with_table(&pubkey_point, scalar, base_table);
+
+    ge_p3_tobytes(pubkey_out, &pubkey_point);
+}
+
+extern "C" __global__ void test_i2p_roundtrip_kernel(
+    const uint8_t* __restrict__ base_seed,
+    const ge_precomp* __restrict__ base_table,
+    uint64_t iteration,
+    uint8_t* __restrict__ out_seed,
+    uint8_t* __restrict__ out_pubkey,
+    uint8_t* __restrict__ out_random_data,
+    char* __restrict__ out_i2p_address,
+    uint8_t* __restrict__ out_hash)
+{
+    uint8_t seed[32];
+    generate_seed(base_seed, 0, iteration, seed);
+
+    uint8_t scalar[32];
+    ed25519_derive_scalar(seed, scalar);
+    ge_p3 pubkey_point;
+    ge_scalarmult_base_with_table(&pubkey_point, scalar, base_table);
+    uint8_t pubkey[32];
+    ge_p3_tobytes(pubkey, &pubkey_point);
+
+    uint8_t random_data[I2P_PUBKEY_SIZE];
+    uint64_t rand_state = ((uint64_t)seed[0] | ((uint64_t)seed[1] << 8) | ((uint64_t)seed[2] << 16) | ((uint64_t)seed[3] << 24) |
+                          ((uint64_t)seed[4] << 32) | ((uint64_t)seed[5] << 40) | ((uint64_t)seed[6] << 48) | ((uint64_t)seed[7] << 56))
+                        ^ ((uint64_t)seed[8] | ((uint64_t)seed[9] << 8) | ((uint64_t)seed[10] << 16) | ((uint64_t)seed[11] << 24) |
+                          ((uint64_t)seed[12] << 32) | ((uint64_t)seed[13] << 40) | ((uint64_t)seed[14] << 48) | ((uint64_t)seed[15] << 56));
+    for (int chunk = 0; chunk < 8; chunk++) {
+        for (int i = 0; i < 4; i++) {
+            rand_state = xorshift64(rand_state);
+            int idx = chunk * 32 + i * 8;
+            random_data[idx + 0] = rand_state & 0xFF;
+            random_data[idx + 1] = (rand_state >> 8) & 0xFF;
+            random_data[idx + 2] = (rand_state >> 16) & 0xFF;
+            random_data[idx + 3] = (rand_state >> 24) & 0xFF;
+            random_data[idx + 4] = (rand_state >> 32) & 0xFF;
+            random_data[idx + 5] = (rand_state >> 40) & 0xFF;
+            random_data[idx + 6] = (rand_state >> 48) & 0xFF;
+            random_data[idx + 7] = (rand_state >> 56) & 0xFF;
+        }
+    }
+
+    // Hash destination piece-by-piece using streaming SHA-256 (isolated in __noinline__ function)
+    uint8_t hash[32];
+    compute_i2p_hash(random_data, pubkey, hash);
+
+    char i2p_address[BASE32_I2P_ADDRESS_LENGTH + 1];
+    base32_encode(hash, i2p_address);
+
+    // Copy outputs
+    for (int i = 0; i < 32; i++) {
+        out_seed[i] = seed[i];
+        out_pubkey[i] = pubkey[i];
+        out_hash[i] = hash[i];
+    }
+    for (int i = 0; i < I2P_PUBKEY_SIZE; i++) {
+        out_random_data[i] = random_data[i];
+    }
+    for (int i = 0; i < BASE32_I2P_ADDRESS_LENGTH; i++) {
+        out_i2p_address[i] = i2p_address[i];
+    }
+}
+
+// Debug kernel: output SHA-512 hash and derived scalar for a given seed
+extern "C" __global__ void test_sha512_kernel(
+    const uint8_t* __restrict__ seed,
+    uint8_t* __restrict__ out_hash)
+{
+    sha512(seed, 32, out_hash);
+}
+
+// Test kernel: SHA-256 of 391-byte input (same size as I2P destination, multi-block)
+extern "C" __global__ void test_sha256_kernel(
+    const uint8_t* __restrict__ data,
+    uint8_t* __restrict__ out_hash)
+{
+    sha256(data, 391, out_hash);
+}
+
+// Test kernel: SHA3-256 of arbitrary input
+extern "C" __global__ void test_sha3_256_kernel(
+    const uint8_t* __restrict__ data,
+    int len,
+    uint8_t* __restrict__ out_hash)
+{
+    sha3_256(data, len, out_hash);
+}
+
+// Test kernel: Full Tor address roundtrip — seed → pubkey → checksum → address_data → base32
+extern "C" __global__ void test_tor_roundtrip_kernel(
+    const uint8_t* __restrict__ seed,
+    const ge_precomp* __restrict__ base_table,
+    uint8_t* __restrict__ out_pubkey,
+    uint8_t* __restrict__ out_checksum,
+    uint8_t* __restrict__ out_address_data,
+    char* __restrict__ out_tor_address)
+{
+    // Derive pubkey from seed
+    uint8_t scalar[32];
+    ed25519_derive_scalar(seed, scalar);
+
+    ge_p3 pubkey_point;
+    ge_scalarmult_base_with_table(&pubkey_point, scalar, base_table);
+
+    uint8_t pubkey[32];
+    ge_p3_tobytes(pubkey, &pubkey_point);
+
+    // Compute Tor checksum
+    uint8_t checksum[2];
+    tor_checksum(pubkey, checksum);
+
+    // Construct address data (pubkey || checksum || version)
+    uint8_t address_data[TOR_ADDRESS_DATA_SIZE];
+    construct_tor_address_data(pubkey, checksum, address_data);
+
+    // Base32 encode
+    char tor_address[BASE32_TOR_ADDRESS_LENGTH + 1];
+    base32_encode_tor(address_data, tor_address);
+    tor_address[BASE32_TOR_ADDRESS_LENGTH] = '\0';
+
+    // Copy outputs
+    for (int i = 0; i < 32; i++) {
+        out_pubkey[i] = pubkey[i];
+    }
+    out_checksum[0] = checksum[0];
+    out_checksum[1] = checksum[1];
+    for (int i = 0; i < TOR_ADDRESS_DATA_SIZE; i++) {
+        out_address_data[i] = address_data[i];
+    }
+    for (int i = 0; i < BASE32_TOR_ADDRESS_LENGTH; i++) {
+        out_tor_address[i] = tor_address[i];
     }
 }

@@ -57,7 +57,7 @@ cargo test
 
 2. **GPU - Combined Kernel** - `kernels/combined_vanity.cu`
    - Shared Ed25519 keypair generation (SHA-512 → scalar → scalar mult)
-   - I2P path: Destination construction (391 bytes) → SHA-256 → Base32
+   - I2P path: Destination construction (256 random + 96 zero pad + 32 pubkey + 7 cert = 391 bytes) → SHA-256 → Base32 (52 chars)
    - Tor path: checksum = SHA3-256(".onion checksum" || pubkey || 0x03)[:2] → Base32
    - Multi-prefix matching with case-insensitive comparison for both networks
 
@@ -97,8 +97,45 @@ xorshift64(tid, iteration) → 32-byte seed → SHA-512(seed) → scalar → ge_
 ### I2P Address Derivation
 
 ```
-Ed25519 pubkey + random_data → Destination (391 bytes) → SHA-256 → Base32 → .b32.i2p address
+Destination (391 bytes) → SHA-256 (32 bytes) → Base32 (52 chars) → ".b32.i2p"
 ```
+
+#### Destination Binary Structure (ElGamal 2048 + Ed25519)
+
+Total: **391 bytes**. Source: I2P router `KeysAndCert.writeBytes()`.
+
+| Offset | Size | Field | Value |
+|--------|------|-------|-------|
+| 0–255 | 256 | Crypto Public Key (ElGamal) | Random data for vanity gen; unused for address validity |
+| 256–351 | 96 | Padding | Zeros in our impl; real I2P routers use leading bytes of raw signing key slot |
+| 352–383 | 32 | Signing Public Key (Ed25519) | Right-aligned in the 128-byte signing key slot |
+| 384–390 | 7 | Key Certificate | Fixed bytes (see below) |
+
+**Layout rule** (from I2P spec): "Crypto Public Key is aligned at the start and Signing Public Key is aligned at the end."
+
+#### Key Certificate (7 bytes, fixed for ElGamal+Ed25519)
+
+Source: I2P router `KeyCertificate.Ed25519Cert.ED_DATA`.
+
+```
+Byte 0:   0x05  — Certificate type (CERTIFICATE_TYPE_KEY)
+Byte 1–2: 0x00 0x04 — Payload length (4 bytes, big-endian)
+Byte 3–4: 0x00 0x07 — Sig type: EdDSA-SHA512-Ed25519 (code 7)
+Byte 5–6: 0x00 0x00 — Crypto type: ElGamal-2048 (code 0)
+```
+
+**Other key type codes** (for reference):
+- Sig types: DSA-SHA1=1, ECDSA-P256=6, **Ed25519=7**, Ed25519ph=8, RedDSA=11
+- Crypto types: **ElGamal-2048=0**, ECIES-X25519=4
+
+If crypto type were X25519 (code 4), the certificate would be `{0x05, 0x00, 0x04, 0x00, 0x07, 0x00, 0x04}` and the Destination would be 167 bytes (32+96+32+7).
+
+#### Base32 Encoding
+
+- Alphabet: `abcdefghijklmnopqrstuvwxyz234567` (RFC 3548, lowercase)
+- 32-byte SHA-256 hash → 256 bits → 52 characters (51 full + 1 trailing bit)
+- **No padding characters** (`=`) are used
+- Output is always lowercase; decoding is case-insensitive
 
 ### Tor v3 Address Derivation
 
@@ -110,8 +147,9 @@ Ed25519 pubkey → checksum = SHA3-256(".onion checksum" || pubkey || 0x03)[:2] 
 
 **I2P** (679 bytes binary `.b32.i2p.dat`):
 ```
-Destination (391) + PrivateKey (256, zeros) + SigningPrivateKey (32, Ed25519 seed)
+Destination (391) + PrivateKey (256, zeros for ElGamal) + SigningPrivateKey (32, Ed25519 seed)
 ```
+The 679-byte keyfile layout is: bytes 0–390 = Destination, bytes 391–646 = ElGamal private key (zeros), bytes 647–678 = Ed25519 seed.
 
 **Tor** (directory `<address>.onion/`):
 ```
@@ -130,7 +168,9 @@ hostname: <address>.onion
 
 ## Reference Documentation
 
-- I2P spec: https://geti2p.net/spec/common-structures
+- I2P Destination serialization: https://gitlab.com/i2p/i2p.i2p/-/blob/master/core/java/src/net/i2p/data/KeysAndCert.java (`writeBytes()`)
+- I2P KeyCertificate: https://gitlab.com/i2p/i2p.i2p/-/blob/master/core/java/src/net/i2p/crypto/KeyCertificate.java
+- I2P Base32: https://gitlab.com/i2p/i2p.i2p/-/blob/master/core/java/src/net/i2p/util/Base32.java
 - Tor v3 spec: https://spec.torproject.org/rend-spec-v3
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.

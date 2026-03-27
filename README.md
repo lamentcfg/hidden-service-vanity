@@ -2,6 +2,8 @@
 
 Generate custom vanity addresses for I2P (`.b32.i2p`) and Tor v3 (`.onion`) hidden services using GPU acceleration.
 
+**Disclaimer**: This tool uses a non-cryptographic PRNG (xorshift64) to derive per-thread Ed25519 seeds from a crypto-grade base seed. While the initial base seed is sourced from OS entropy (`rand::thread_rng()`), the GPU-side seed derivation is not a CSPRNG. No warranty or liability is accepted. Use at your own risk.
+
 ## Features
 
 - **GPU Acceleration**: Uses CUDA for parallel address generation

@@ -48,68 +48,123 @@ __device__ __forceinline__ uint32_t gamma1(uint32_t x) {
     return rotr32(x, 17) ^ rotr32(x, 19) ^ (x >> 10);
 }
 
-__device__ void sha256(const uint8_t* data, size_t len, uint8_t* hash) {
+// --- Streaming SHA-256 API (avoids large stack allocations) ---
+
+typedef struct {
     uint32_t h[8];
-    for (int i = 0; i < 8; i++) h[i] = SHA256_H[i];
+    uint8_t buffer[64];
+    uint64_t total_len;
+    uint32_t buf_len;
+} sha256_ctx;
 
-    size_t padded_len = ((len + 9 + 63) / 64) * 64;
-    int num_blocks = padded_len / 64;
-
+__device__ __forceinline__ void sha256_process_block(uint32_t* h, const uint8_t* block) {
     uint32_t w[64];
-
-    for (int block_idx = 0; block_idx < num_blocks; block_idx++) {
-        for (int i = 0; i < 16; i++) {
-            int byte_idx = block_idx * 64 + i * 4;
-            if (byte_idx + 3 < (int)len) {
-                w[i] = ((uint32_t)data[byte_idx] << 24) |
-                       ((uint32_t)data[byte_idx + 1] << 16) |
-                       ((uint32_t)data[byte_idx + 2] << 8) |
-                       ((uint32_t)data[byte_idx + 3]);
-            } else if (byte_idx < (int)len) {
-                uint32_t word = 0;
-                for (int j = 0; j < 4; j++) {
-                    int idx = byte_idx + j;
-                    if (idx < (int)len) {
-                        word |= ((uint32_t)data[idx]) << (24 - j * 8);
-                    } else if (idx == (int)len) {
-                        word |= 0x80000000 >> (j * 8);
-                    }
-                }
-                w[i] = word;
-            } else if (block_idx == num_blocks - 1 && i >= 14) {
-                uint64_t bit_len = (uint64_t)len * 8;
-                w[i] = (i == 14) ? (uint32_t)(bit_len >> 32) : (uint32_t)bit_len;
-            } else {
-                w[i] = 0;
-            }
-        }
-
-        for (int i = 16; i < 64; i++) {
-            w[i] = gamma1(w[i - 2]) + w[i - 7] + gamma0(w[i - 15]) + w[i - 16];
-        }
-
-        uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
-        uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
-
-        for (int i = 0; i < 64; i++) {
-            uint32_t t1 = hh + sigma1(e) + sha256_ch(e, f, g) + SHA256_K[i] + w[i];
-            uint32_t t2 = sigma0(a) + sha256_maj(a, b, c);
-            hh = g; g = f; f = e;
-            e = d + t1;
-            d = c; c = b; b = a;
-            a = t1 + t2;
-        }
-
-        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
-        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+    for (int i = 0; i < 16; i++) {
+        w[i] = ((uint32_t)block[i*4] << 24) |
+               ((uint32_t)block[i*4+1] << 16) |
+               ((uint32_t)block[i*4+2] << 8) |
+               ((uint32_t)block[i*4+3]);
     }
+    for (int i = 16; i < 64; i++) {
+        w[i] = gamma1(w[i - 2]) + w[i - 7] + gamma0(w[i - 15]) + w[i - 16];
+    }
+
+    uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
+    uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
+
+    for (int i = 0; i < 64; i++) {
+        uint32_t t1 = hh + sigma1(e) + sha256_ch(e, f, g) + SHA256_K[i] + w[i];
+        uint32_t t2 = sigma0(a) + sha256_maj(a, b, c);
+        hh = g; g = f; f = e;
+        e = d + t1;
+        d = c; c = b; b = a;
+        a = t1 + t2;
+    }
+
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+    h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+}
+
+__device__ __forceinline__ void sha256_init(sha256_ctx* ctx) {
+    for (int i = 0; i < 8; i++) ctx->h[i] = SHA256_H[i];
+    ctx->total_len = 0;
+    ctx->buf_len = 0;
+}
+
+__device__ void sha256_update(sha256_ctx* ctx, const uint8_t* data, size_t len) {
+    ctx->total_len += len;
+
+    if (ctx->buf_len > 0) {
+        uint32_t space = 64 - ctx->buf_len;
+        uint32_t to_copy = (len < space) ? (uint32_t)len : space;
+        for (uint32_t i = 0; i < to_copy; i++) {
+            ctx->buffer[ctx->buf_len + i] = data[i];
+        }
+        ctx->buf_len += to_copy;
+        data += to_copy;
+        len -= to_copy;
+        if (ctx->buf_len == 64) {
+            sha256_process_block(ctx->h, ctx->buffer);
+            ctx->buf_len = 0;
+        }
+    }
+
+    while (len >= 64) {
+        sha256_process_block(ctx->h, data);
+        data += 64;
+        len -= 64;
+    }
+
+    if (len > 0) {
+        for (size_t i = 0; i < len; i++) {
+            ctx->buffer[i] = data[i];
+        }
+        ctx->buf_len = (uint32_t)len;
+    }
+}
+
+__device__ void sha256_final(sha256_ctx* ctx, uint8_t* hash) {
+    uint64_t bit_len = ctx->total_len * 8;
+
+    ctx->buffer[ctx->buf_len++] = 0x80;
+
+    if (ctx->buf_len > 56) {
+        while (ctx->buf_len < 64) {
+            ctx->buffer[ctx->buf_len++] = 0;
+        }
+        sha256_process_block(ctx->h, ctx->buffer);
+        ctx->buf_len = 0;
+    }
+
+    while (ctx->buf_len < 56) {
+        ctx->buffer[ctx->buf_len++] = 0;
+    }
+
+    ctx->buffer[56] = (bit_len >> 56) & 0xFF;
+    ctx->buffer[57] = (bit_len >> 48) & 0xFF;
+    ctx->buffer[58] = (bit_len >> 40) & 0xFF;
+    ctx->buffer[59] = (bit_len >> 32) & 0xFF;
+    ctx->buffer[60] = (bit_len >> 24) & 0xFF;
+    ctx->buffer[61] = (bit_len >> 16) & 0xFF;
+    ctx->buffer[62] = (bit_len >> 8) & 0xFF;
+    ctx->buffer[63] = bit_len & 0xFF;
+
+    sha256_process_block(ctx->h, ctx->buffer);
 
     for (int i = 0; i < 8; i++) {
-        hash[i * 4] = (h[i] >> 24) & 0xFF;
-        hash[i * 4 + 1] = (h[i] >> 16) & 0xFF;
-        hash[i * 4 + 2] = (h[i] >> 8) & 0xFF;
-        hash[i * 4 + 3] = h[i] & 0xFF;
+        hash[i * 4] = (ctx->h[i] >> 24) & 0xFF;
+        hash[i * 4 + 1] = (ctx->h[i] >> 16) & 0xFF;
+        hash[i * 4 + 2] = (ctx->h[i] >> 8) & 0xFF;
+        hash[i * 4 + 3] = ctx->h[i] & 0xFF;
     }
+}
+
+// Convenience wrapper (for standalone test kernel)
+__device__ void sha256(const uint8_t* data, size_t len, uint8_t* hash) {
+    sha256_ctx ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, data, len);
+    sha256_final(&ctx, hash);
 }
 
 #endif

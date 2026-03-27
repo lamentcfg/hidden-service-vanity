@@ -112,7 +112,7 @@ __device__ void sha512(const uint8_t* data, size_t len, uint8_t* hash) {
                        ((uint64_t)data[byte_idx + 5] << 16) |
                        ((uint64_t)data[byte_idx + 6] << 8) |
                        ((uint64_t)data[byte_idx + 7]);
-            } else if (byte_idx < (int)len) {
+            } else if (byte_idx <= (int)len) {
                 // Partial word with padding
                 uint64_t word = 0;
                 for (int j = 0; j < 8; j++) {

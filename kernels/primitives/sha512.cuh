@@ -9,11 +9,10 @@
 #ifndef SHA512_CUH
 #define SHA512_CUH
 
-// CUDA-compatible types
+// CUDA-compatible types (size_t provided by NVRTC)
 typedef unsigned char uint8_t;
 typedef unsigned int uint32_t;
 typedef unsigned long long uint64_t;
-typedef unsigned long size_t;
 
 // SHA-512 constants (80 rounds)
 __constant__ const uint64_t SHA512_K[80] = {

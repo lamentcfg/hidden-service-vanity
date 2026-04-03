@@ -16,8 +16,237 @@ mod utils;
 
 use precomp_table::BASE_TABLE;
 
+/// Supported CUDA toolkit version ranges (major, min_minor, max_minor).
+/// Update this list when adding or dropping CUDA version support.
+const SUPPORTED_CUDA_VERSIONS: &[(u32, u32, u32)] = &[
+    (11, 4, 8),  // CUDA 11.4 – 11.8
+    (12, 0, 9),  // CUDA 12.0 – 12.9
+    (13, 0, 0),  // CUDA 13.0
+];
+
+fn format_supported_versions() -> String {
+    SUPPORTED_CUDA_VERSIONS
+        .iter()
+        .map(|(major, lo, hi)| {
+            if lo == hi {
+                format!("{}.{}", major, lo)
+            } else {
+                format!("{}.{} – {}.{}", major, lo, major, hi)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n    ")
+}
+
 // Kernel source embedded at compile time by build.rs
 const KERNEL_SOURCE: &str = include_str!(concat!(env!("OUT_DIR"), "/combined_kernel.cu"));
+
+/// On Windows, cudarc dynamically loads CUDA DLLs by trying candidate filenames
+/// (e.g. `nvrtc64.dll`, `nvrtc64_1104.dll`) via LoadLibraryExW with flags=0,
+/// which searches PATH. The CUDA toolkit installs versioned DLLs like
+/// `nvrtc64_1302.dll` that won't match the compile-time candidate names.
+///
+/// This function:
+/// 1. Discovers all CUDA installations (CUDA_PATH, CUDA_PATH_V* env vars,
+///    and the default install directory)
+/// 2. Copies the latest versioned DLLs to a temp directory with the generic
+///    names cudarc expects (e.g. `nvrtc64_1302.dll` → `nvrtc64.dll`)
+/// 3. Prepends all CUDA bin dirs and the temp dir to PATH
+#[cfg(target_os = "windows")]
+fn ensure_cuda_on_path() {
+    use std::fs;
+
+    // Collect all CUDA installation directories
+    let mut cuda_dirs: Vec<std::path::PathBuf> = Vec::new();
+
+    // CUDA_PATH (current active CUDA, set by installer)
+    if let Ok(p) = std::env::var("CUDA_PATH") {
+        let pb = std::path::PathBuf::from(&p);
+        if pb.exists() && !cuda_dirs.contains(&pb) {
+            cuda_dirs.push(pb);
+        }
+    }
+
+    // CUDA_PATH_V11_4, CUDA_PATH_V12_0, etc. (all installed versions)
+    for (key, val) in std::env::vars() {
+        if key.starts_with("CUDA_PATH_V") {
+            let pb = std::path::PathBuf::from(&val);
+            if pb.exists() && !cuda_dirs.contains(&pb) {
+                cuda_dirs.push(pb);
+            }
+        }
+    }
+
+    // Default install location
+    let default_base =
+        std::path::PathBuf::from(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA");
+    if default_base.exists() {
+        if let Ok(entries) = fs::read_dir(&default_base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() && !cuda_dirs.contains(&path) {
+                    cuda_dirs.push(path);
+                }
+            }
+        }
+    }
+
+    if cuda_dirs.is_empty() {
+        return;
+    }
+
+    // Sort descending by version (prefer latest CUDA) so we copy the newest DLLs
+    cuda_dirs.sort_by(|a, b| {
+        let va = a
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .trim_start_matches('v')
+            .replace('.', "");
+        let vb = b
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .trim_start_matches('v')
+            .replace('.', "");
+        // Compare as integers (e.g. "132" vs "114")
+        let na: u32 = va.parse().unwrap_or(0);
+        let nb: u32 = vb.parse().unwrap_or(0);
+        nb.cmp(&na)
+    });
+
+    // Staging directory for DLL copies with generic names.
+    // Clear it first so stale copies from a previous CUDA installation
+    // (e.g. after upgrading/downgrading CUDA) don't take precedence.
+    let staging = std::env::temp_dir().join("hidden-service-vanity-cuda");
+    let _ = fs::remove_dir_all(&staging);
+    let _ = fs::create_dir_all(&staging);
+
+    // CUDA libraries that cudarc dynamically loads.
+    // cudarc looks for names like {prefix}64.dll, {prefix}64_1104.dll, etc.
+    // We copy the actual versioned DLL as the generic {prefix}64.dll.
+    let cuda_libs = ["nvrtc", "nvcuda", "cublas", "cublasLt", "curand", "nvrtc-builtins"];
+
+    // CUDA 13+ moved DLLs into bin\x64\; older versions keep them in bin\.
+    // Scan both locations for each installation.
+    for cuda_dir in &cuda_dirs {
+        let search_dirs: Vec<std::path::PathBuf> = vec![
+            cuda_dir.join("bin"),
+            cuda_dir.join("bin").join("x64"),
+        ];
+
+        for bin_dir in &search_dirs {
+            if !bin_dir.exists() {
+                continue;
+            }
+
+            if let Ok(entries) = fs::read_dir(bin_dir) {
+                let mut dlls: Vec<(String, std::path::PathBuf)> = Vec::new();
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if !name.to_lowercase().ends_with(".dll") {
+                        continue;
+                    }
+                    dlls.push((name, entry.path()));
+                }
+
+                for prefix in &cuda_libs {
+                    let generic_name = format!("{}64.dll", prefix);
+                    let dest = staging.join(&generic_name);
+                    if dest.exists() {
+                        continue; // Already copied from a higher-version CUDA
+                    }
+
+                    // Find the versioned DLL matching this prefix.
+                    // Names like: nvrtc64_1302.dll, nvrtc64_110.dll, nvcuda64_12.dll, etc.
+                    let prefix_lower = format!("{}64_", prefix.to_lowercase());
+                    let mut best: Option<std::path::PathBuf> = None;
+                    for (name, path) in &dlls {
+                        if name.to_lowercase().starts_with(&prefix_lower) {
+                            best = Some(path.clone());
+                        }
+                    }
+
+                    // Also try the unversioned name directly
+                    if best.is_none() {
+                        let unversioned = bin_dir.join(&generic_name);
+                        if unversioned.exists() {
+                            best = Some(unversioned);
+                        }
+                    }
+
+                    if let Some(src) = best {
+                        let _ = fs::copy(&src, &dest);
+                        // NVRTC loads its builtins DLL by the exact versioned name
+                        // (e.g. nvrtc-builtins64_132.dll), so also stage it with
+                        // the original filename alongside the generic copy.
+                        if prefix.contains("builtins") {
+                            if let Some(name) = src.file_name() {
+                                let versioned_dest = staging.join(name);
+                                if !versioned_dest.exists() {
+                                    let _ = fs::copy(&src, &versioned_dest);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Build new PATH: staging dir + all CUDA bin dirs (+ x64) + original PATH
+    let mut path_parts: Vec<String> = Vec::new();
+    path_parts.push(staging.display().to_string());
+    for dir in &cuda_dirs {
+        let bin = dir.join("bin");
+        let bin_x64 = dir.join("bin").join("x64");
+        if bin_x64.exists() {
+            path_parts.push(bin_x64.display().to_string());
+        }
+        if bin.exists() {
+            path_parts.push(bin.display().to_string());
+        }
+    }
+    if let Ok(current_path) = std::env::var("PATH") {
+        path_parts.push(current_path);
+    }
+    std::env::set_var("PATH", path_parts.join(";"));
+}
+
+/// Install a panic hook that catches cudarc library loading failures and
+/// prints a user-friendly message with installation instructions.
+fn install_cuda_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info.to_string();
+        if msg.contains("Unable to dynamically load") && msg.contains("shared library") {
+            eprintln!("\n========================================");
+            eprintln!("  CUDA libraries not found");
+            eprintln!("========================================\n");
+            eprintln!("  This program requires the CUDA Toolkit to be installed.");
+            eprintln!();
+            eprintln!("  Supported CUDA versions:");
+            eprintln!("    {}", format_supported_versions());
+            eprintln!();
+            eprintln!("  Download: https://developer.nvidia.com/cuda-downloads");
+            eprintln!();
+            #[cfg(target_os = "windows")]
+            {
+                eprintln!("  Make sure the CUDA_PATH environment variable is set (the installer");
+                eprintln!("  does this automatically). If you have a CUDA version installed that");
+                eprintln!("  differs from the one this program was built for, the DLL names may");
+                eprintln!("  not match. Try installing CUDA 11.4 or later.");
+            }
+            #[cfg(not(target_os = "windows"))]
+            eprintln!("  Make sure ldconfig is configured, or set LD_LIBRARY_PATH to include\n  the CUDA lib directory (e.g. /usr/local/cuda/lib64).");
+            eprintln!();
+            eprintln!("  Original error:\n    {}", msg);
+            std::process::exit(1);
+        } else {
+            default_hook(info);
+        }
+    }));
+}
 
 /// Hidden service vanity address generator with CUDA acceleration
 #[derive(Parser, Debug)]
@@ -102,6 +331,10 @@ struct RunArgs {
 }
 
 fn main() -> Result<()> {
+    #[cfg(target_os = "windows")]
+    ensure_cuda_on_path();
+    install_cuda_panic_hook();
+
     let args = Args::parse();
 
     // Load prefixes from list files if specified

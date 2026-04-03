@@ -238,9 +238,9 @@ dependencies = [
 
 [[package]]
 name = "cudarc"
-version = "0.19.3"
+version = "0.19.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6468cb7fa330840f3ebcd8df51edc0e7bf5c18df524792ce6004c6821851cdf3"
+checksum = "f071cd6a7b5d51607df76aa2d426aaabc7a74bc6bdb885b8afa63a880572ad9b"
 dependencies = [
  "libloading",
 ]
@@ -442,6 +442,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hidden-service-vanity"
+version = "1.1.0"
+dependencies = [
+ "anyhow",
+ "base32",
+ "chrono",
+ "clap",
+ "cudarc",
+ "ed25519",
+ "ed25519-dalek",
+ "rand 0.8.5",
+ "reqwest",
+ "sha2",
+ "sha3",
+]
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -539,23 +556,6 @@ dependencies = [
  "tokio",
  "tower-service",
  "tracing",
-]
-
-[[package]]
-name = "i2p-vanity-cuda"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base32",
- "chrono",
- "clap",
- "cudarc",
- "ed25519",
- "ed25519-dalek",
- "rand 0.8.5",
- "reqwest",
- "sha2",
- "sha3",
 ]
 
 [[package]]

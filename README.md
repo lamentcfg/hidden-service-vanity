@@ -17,21 +17,16 @@ Generate custom vanity addresses for I2P (`.b32.i2p`) and Tor v3 (`.onion`) hidd
 
 ## Prerequisites
 
-- **Rust** 1.70 or later
-- **CUDA Toolkit** 11.4+ (for driver and nvrtc libraries)
+- **CUDA Toolkit** — supported versions:
+  - 11.4 – 11.8
+  - 12.0 – 12.9
+  - 13.0
 - **NVIDIA GPU** with CUDA support (Compute capability 3.0+)
 - **NVIDIA Drivers** compatible with your CUDA version
 
 ## Installation
 
-```bash
-# Clone the repository
-git clone https://github.com/lamentcfg/hidden-service-vanity.git
-cd hidden-service-vanity
-
-# Build in release mode
-cargo build --release
-```
+[**Download Latest Version**](https://github.com/lamentcfg/hidden-service-vanity/releases/latest)
 
 ## Usage
 
@@ -39,16 +34,16 @@ cargo build --release
 
 ```bash
 # Search for I2P addresses starting with "test"
-./target/release/hidden-service-vanity -i test -o ./keys
+hidden-service-vanity -i test -o ./keys
 
 # Search for Tor addresses starting with "abc"
-./target/release/hidden-service-vanity -t abc -o ./keys
+hidden-service-vanity -t abc -o ./keys
 
 # Search both networks simultaneously
-./target/release/hidden-service-vanity -i test -t abc -o ./keys
+hidden-service-vanity -i test -t abc -o ./keys
 
 # Search for multiple I2P prefixes
-./target/release/hidden-service-vanity -i foo -i bar -o ./keys
+hidden-service-vanity -i foo -i bar -o ./keys
 ```
 
 ### Command Line Options
@@ -75,31 +70,31 @@ cargo build --release
 
 ```bash
 # Generate an I2P address starting with "test"
-./target/release/hidden-service-vanity -i test -o ./keys
+hidden-service-vanity -i test -o ./keys
 
 # Generate a Tor address starting with "abc"
-./target/release/hidden-service-vanity -t abc -o ./keys
+hidden-service-vanity -t abc -o ./keys
 
 # Generate both I2P and Tor addresses at once (shares keypair generation)
-./target/release/hidden-service-vanity -i foo -t bar -o ./keys
+hidden-service-vanity -i foo -t bar -o ./keys
 
 # Generate multiple I2P addresses
-./target/release/hidden-service-vanity -i test -n 5 -o ./keys
+hidden-service-vanity -i test -n 5 -o ./keys
 
 # Search for multiple prefixes on the same network
-./target/release/hidden-service-vanity -i abc -i def -i xyz -o ./keys
+hidden-service-vanity -i abc -i def -i xyz -o ./keys
 
 # Load prefixes from a file (one per line, # for comments)
-./target/release/hidden-service-vanity --i2p-list prefixes.txt -o ./keys
+hidden-service-vanity --i2p-list prefixes.txt -o ./keys
 
 # Mix command-line and file-based prefixes
-./target/release/hidden-service-vanity -i foo --i2p-list prefixes.txt -t bar --tor-list tor_prefixes.txt -o ./keys
+hidden-service-vanity -i foo --i2p-list prefixes.txt -t bar --tor-list tor_prefixes.txt -o ./keys
 
 # Enable ntfy notifications when a match is found
-./target/release/hidden-service-vanity -i test --ntfy-topic my-vanity-search -o ./keys
+hidden-service-vanity -i test --ntfy-topic my-vanity-search -o ./keys
 
 # Use custom ntfy server with authentication
-./target/release/hidden-service-vanity -i test --ntfy-host https://ntfy.example.com --ntfy-topic my-topic --ntfy-username user --ntfy-password pass -o ./keys
+hidden-service-vanity -i test --ntfy-host https://ntfy.example.com --ntfy-topic my-topic --ntfy-username user --ntfy-password pass -o ./keys
 ```
 
 ## Performance Estimates
@@ -118,6 +113,10 @@ cargo build --release
 ## Contributing
 
 This repository is not open to contributions. However, you are welcome to fork the project for your own use. If you encounter bugs or have feature requests, feel free to open an issue.
+
+## Thank You
+
+- [cudarc](https://github.com/chelsea0x3b/cudarc) — Safe and minimal CUDA bindings for Rust, making GPU-accelerated projects like this possible.
 
 ## License
 
